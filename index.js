@@ -1,7 +1,9 @@
 const cheerio = require('cheerio');
 const got = require('got');
+const stream = require('stream');
 const path = require('path');
-const { createWriteStream } = require('fs');
+const fs = require('fs');
+const { promisify } = require('util');
 
 (async () => {
   try {
@@ -16,21 +18,37 @@ const { createWriteStream } = require('fs');
       if (contents[i].type === 'tag' && contents[i].name === 'a') {
         let thisURL = 'https://archive.org' + contents[i].attribs.href;
 
-        // scrape this resulting page for the mp3 and download it
+        // get and downlaod the mp3 in the resulting page
         const thisResponse = await got(thisURL);
         let pageCheerio = cheerio.load(thisResponse.body);
+
+        // look for div.format.group divs
         let pageContents = pageCheerio('div.format-group').contents();
 
+        // get mp3 hrefs
         for (let ii = 0; ii < pageContents.length; ii++) {
           if (pageContents[ii].type === 'tag' 
               && pageContents[ii].name === 'a'
               && pageContents[ii].attribs.href.includes('mp3')) {
 
+            // prep url and filename
             let downloadLink = 'https://archive.org' + pageContents[ii].attribs.href;
             let fileName = decodeURI(path.parse(downloadLink).base);
+
+            // download the file, await for each download to complete 
             console.log('downloading', downloadLink)
-                
-            got.stream(downloadLink).pipe(createWriteStream('./mp3/'+fileName));
+            const pipeline = promisify(stream.pipeline);
+            const downloadStream = got.stream(downloadLink);
+            const fileWriterStream = fs.createWriteStream('./mp3'+fileName);
+
+            downloadStream.on("downloadProgress", ({ transferred, total, percent }) => {
+              const percentage = Math.round(percent * 100);
+              console.error(`progress: ${transferred}/${total} (${percentage}%)`);
+            });
+
+            await pipeline(downloadStream, fileWriterStream)
+              .then(() => console.log(`File downloaded to ${fileName}`))
+              .catch((error) => console.error(`Something went wrong. ${error.message}`));
           }
         }
       }
